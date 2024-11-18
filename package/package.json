@@ -1,9 +1,11 @@
 {
   "name": "easier-openai",
-  "version": "1.0.0",
+  "version": "1.0.30",
   "description": "A package that makes it easier to use the NPM OpenAI package.",
   "main": "./dist/index.js",
   "scripts": {
+    "prepublish": "npm version patch",
+    "publish": "npm publish",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
