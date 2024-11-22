@@ -1,19 +1,28 @@
 {
   "name": "easier-openai",
-  "version": "1.0.30",
+  "version": "1.0.50",
   "description": "A package that makes it easier to use the NPM OpenAI package.",
-  "main": "./dist/index.js",
+  "main": "./src/index.js",
+  "exports": {
+    ".": {
+      "require": "./src/index.js",
+      "import": "./src/index.mjs"
+    },
+    "./esm": "./src/index.mjs"
+  },
   "scripts": {
     "prepublish": "npm version patch",
     "publish": "npm publish",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node -r esm index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "dependencies": {
+    "base64-js": "^1.5.1",
     "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
     "openai": "^4.72.0"
   }
 }
