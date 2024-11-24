@@ -1,6 +1,6 @@
 {
   "name": "easier-openai",
-  "version": "1.0.51",
+  "version": "1.0.53",
   "description": "A package that makes it easier to use the NPM OpenAI package.",
   "main": "./src/index.js",
   "exports": {
@@ -8,7 +8,12 @@
       "require": "./src/index.js",
       "import": "./src/index.mjs"
     },
-    "./esm": "./src/index.mjs"
+    "./esm": "./src/index.mjs",
+    "./min": {
+      "require": "./dist/index.min.js",
+      "import": "./dist/index.min.mjs"
+    },
+    "./min/esm": "./dist/index.min.mjs"
   },
   "scripts": {
     "prepublish": "npm version patch",
