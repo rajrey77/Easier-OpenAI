@@ -1,24 +1,25 @@
-"use strict";
-
 const fs = require('fs');
+const dotenv = require('dotenv');
+const { writeFile } = require('fs/promises');
+const readline = require('readline');
+const path = require('path');
+const base64 = require('base64-js');
+const { OpenAI } = require('openai');
+
+dotenv.config();
+
 const envFilePath = './.env';
 if (!fs.existsSync(envFilePath)) {
     const defaultEnvContent = `OPENAI_API_KEY="your_api_key_here"\nDISABLE_WARNING="false" # Enable at your own risk. Some OpenAI models are [very] expensive to use.`;
     fs.writeFileSync(envFilePath, defaultEnvContent);
     console.log('.env file created. Please fill in the API key.');
 }
-const openai = require('openai');
-require('dotenv').config();
-const { writeFile } = require('fs');
-const readline = require('readline');
-const path = require('path');
-const base64 = require('base64-js');
 
 const gconfig = {
     apiKey: process.env.OPENAI_API_KEY
 };
 
-const persistentFilePath = path.join(__dirname, 'persistentData.json');
+const persistentFilePath = path.join(path.dirname(''), 'persistentData.json');
 
 const conversationsDir = './conversations';
 if (!fs.existsSync(conversationsDir)) {
@@ -52,7 +53,7 @@ process.on('SIGINT', () => {
     savePersistentData();
     process.exit();
 });
-const client = new openai.OpenAI(gconfig);
+const client = new OpenAI(gconfig);
 
 async function warn() {
     if(process.env.DISABLE_WARNING === 'true') {
@@ -182,9 +183,10 @@ async function cmdChat(obj, saveToFile = false, name = '') {
         rl.close();
 
         if (saveToFile) {
-            writeFile(`./conversations/${name}.txt`, JSON.stringify(messages, null, 2), (err) => {
-                if (err) throw err;
+            writeFile(`./conversations/${name}.txt`, JSON.stringify(messages, null, 2)).then(() => {
                 console.log('Conversation saved.');
+            }).catch(err => {
+                throw err;
             });
         }
 
@@ -276,7 +278,7 @@ async function generateImage(config = {}, other = {}) {
 
     if(newOther.file) {
         const imageUrl = completion.data[0].url;
-        const fetch = (await import('node-fetch')).default;
+        const fetch = require('node-fetch');
         const imageResponse = await fetch(imageUrl);
         const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
         const fileName = newOther.fileName ? newOther.fileName : `generated_image.png`;
@@ -306,23 +308,176 @@ function updateSystemInstructions(chatName, newInstructions) {
     console.log('System instructions updated.');
 }
 
-if (require.main == module) {
-    startChat(getResponse);
+function logUsage(endpoint, model, tokens) {
+    const logFilePath = path.join(path.dirname(''), 'usage.log');
+    const logEntry = `${new Date().toISOString()} - Endpoint: ${endpoint}, Model: ${model}, Tokens: ${tokens}\n`;
+    fs.appendFileSync(logFilePath, logEntry);
+    console.log('Usage logged.');
 }
 
-module.exports = {
-    chat: {
-        cmd: cmdChat,
-        getResponse,
-        get: getChat,
-        delete: deleteChat,
-        list: listChats,
-        updateSystemInstructions
-    },
-    audio: {
-        generate: generateAudio
-    },
-    image: {
-        generate: generateImage
-    }
+async function improvePrompt(prompt, tokens, reasoning) {
+    const improvedPrompt = await getResponse(reasoning ? {
+        prompt,
+        messages: [
+            { role: 'user', content: 'John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them.' },
+            { role: 'assistant', content: `
+**Original Prompt**:  
+"John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them."
+
+**Identified Issues**:  
+- **Complexity and Clarity**: The prompt involves multiple time slots that are not immediately intuitive to reconcile. It requires careful analysis to determine a common time block.
+- **Ambiguity**: The instructions do not specify whether to find the earliest possible meeting time or if any time slot will do.
+- **Lack of Structure**: The prompt doesn’t guide the responder toward a specific format for the answer.
+- **No Additional Instructions**: It could benefit from indicating what to do if no common time is found.
+
+**Improved Prompt**:  
+"Determine a time slot for a 30-minute meeting that accommodates the schedules of John, Lisa, and Daniel. Consider the following availability:
+- John: 12:30 PM - 2:00 PM
+- Lisa: 11:00 AM - 1:30 PM
+- Daniel: 1:30 PM - 3:00 PM
+
+Please:
+1. Identify any overlaps in their schedules allowing for a 30-minute meeting.
+2. Suggest the earliest possible time for the meeting.
+3. If no common time exists, state this clearly and suggest alternatives if feasible.
+Present your findings in a concise format, clearly stating the time for the proposed meeting or summarizing your conclusion."
+
+**Reasoning Behind Changes**:  
+- **Complexity Simplification**: By requesting an identified overlap, it makes it easier to deduce shared availability.
+- **Added Specificity**: By specifying the need for the earliest possible time, it adds a prioritization to the solution process.
+- **Answer Format Guidance**: By instructing a clear format for presentation, it ensures a structured response.
+- **Handling of No Solution Scenarios**: By including instructions on what to do if no time is available, it preempts potential confusion in case there’s no overlap.` }
+        ],
+
+
+        sysInstructions: `
+Generate a detailed guide with specific suggestions to improve a given prompt using prompt engineering.
+
+Analyze the provided prompt to determine its purpose, identify areas for potential improvements, provide alternative formulations, and enhance clarity, engagement, and effectiveness.
+
+# Steps
+
+1. **Understand the Initial Prompt**: Carefully read and understand what the provided prompt is trying to achieve, its target objective, and desired outcome. Break down the intent if needed.
+2. **Identify Issues and Scope for Improvement**: Highlight areas where the prompt may be lacking (e.g. clarity, conciseness, specificity, tone). Look for:
+   - **Clarity Issues**: Is the intent of the prompt clear?
+   - **Detail Level**: Does the prompt need more examples or additional context?
+   - **Ambiguity**: Are there any vague instructions that may lead to different or incorrect outcomes?
+   - **Structure**: Is the output format well-defined?
+   - **Additional Context**: Is broader context required for better performance?
+3. **Rewrite Improvements**: Revise the prompt with detailed changes that address the shortcomings. Describe how these changes will make the prompt more effective and why they are needed.
+4. **Add Specific Examples**: Where appropriate, suggest specific examples, and include placeholders to guide a consistent output for varied scenarios.
+5. **Optional Enhancements**: Provide details on optional components or bonus refinements to further elevate the prompt (e.g., including reasoning steps if applicable). 
+
+# Output Format
+
+Respond in sections:
+1. **Original Prompt**: Include the original prompt as provided.
+2. **Identified Issues**: List out specific areas in need of improvement.
+3. **Improved Prompt**: Provide the updated version of the prompt.
+4. **Reasoning Behind Changes**: Explain why each change was made and how it will improve the prompt's overall efficacy in achieving its goal.
+
+# Example
+
+**Original Prompt**:  
+"Describe a situation in which you were proud of your accomplishments."
+
+**Identified Issues**:  
+- **Lack of Clarity**: The instruction is vague. What type of accomplishment does it refer to? Is it personal or professional?
+- **Needs Better Context**: Including more context would guide the user better, e.g., timeline, scale of accomplishment.
+- **No Output Format Guidance**: The output requirements (length, tone, specific details required) are not clearly defined.
+
+**Improved Prompt**:  
+"Think of a personal or professional accomplishment from the past three years that made you feel proud. Provide a detailed account, including:
+  - What the accomplishment was.
+  - The steps you took to achieve it.
+  - What obstacles you faced and how you overcame them.
+Write in 4-5 sentences. Aim for a positive and reflective tone."
+
+**Reasoning Behind Changes**:  
+- **Specification**: Narrowing down "personal or professional" helps contextualize the prompt.
+- **Timeline**: Adding a 'past three years' horizon provides a clear boundary, making it easier to think of examples.
+- **Guidance on Detail**: Instructing the user which aspects to describe adds structure to the response.
+- **Output Parameters**: Specifying length and tone helps ensure consistency and matches the desired level of response. 
+
+# Notes
+
+- Always consider incorporating parameters for output format and tone, especially when the initial prompt is open-ended.
+- Ensure that revisions maintain the alignment with the original intent while enhancing overall clarity and engagement.
+        `,
+        maxTokens: tokens
+    } : {
+        prompt,
+
+        messages: [
+            { role: 'user', content: 'John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them.' },
+            { role: 'assistant', content: `
+Determine a time slot for a 30-minute meeting that accommodates the schedules of John, Lisa, and Daniel. Consider the following availability:
+- John: 12:30 PM - 2:00 PM
+- Lisa: 11:00 AM - 1:30 PM
+- Daniel: 1:30 PM - 3:00 PM
+
+Please:
+1. Identify any overlaps in their schedules allowing for a 30-minute meeting.
+2. Suggest the earliest possible time for the meeting.
+3. If no common time exists, state this clearly and suggest alternatives if feasible.
+Present your findings in a concise format, clearly stating the time for the proposed meeting or summarizing your conclusion.    
+            `}
+        ],
+
+
+        sysInstructions: `
+Generate a detailed guide with specific suggestions to improve a given prompt using prompt engineering.
+
+Analyze the provided prompt to determine its purpose, identify areas for potential improvements, provide alternative formulations, and enhance clarity, engagement, and effectiveness.
+
+# Steps
+
+1. **Understand the Initial Prompt**: Carefully read and understand what the provided prompt is trying to achieve, its target objective, and desired outcome. Break down the intent if needed.
+2. **Identify Issues and Scope for Improvement**: Highlight areas where the prompt may be lacking (e.g. clarity, conciseness, specificity, tone). Look for:
+   - **Clarity Issues**: Is the intent of the prompt clear?
+   - **Detail Level**: Does the prompt need more examples or additional context?
+   - **Ambiguity**: Are there any vague instructions that may lead to different or incorrect outcomes?
+   - **Structure**: Is the output format well-defined?
+   - **Additional Context**: Is broader context required for better performance?
+3. **Rewrite Improvements**: Revise the prompt with detailed changes that address the shortcomings. Describe how these changes will make the prompt more effective and why they are needed.
+4. **Add Specific Examples**: Where appropriate, suggest specific examples, and include placeholders to guide a consistent output for varied scenarios.
+5. **Optional Enhancements**: Provide details on optional components or bonus refinements to further elevate the prompt (e.g., including reasoning steps if applicable). 
+
+# Notes
+
+- Always consider incorporating parameters for output format and tone, especially when the initial prompt is open-ended.
+- Ensure that revisions maintain the alignment with the original intent while enhancing overall clarity and engagement.
+- Only share the improved prompt with the user, nothing else.
+        `,
+        maxTokens: tokens
+    });
+    return improvedPrompt;
 }
+
+const chat = {
+    cmd: cmdChat,
+    getResponse,
+    get: getChat,
+    delete: deleteChat,
+    list: listChats,
+    updateSystemInstructions
+};
+
+const audio = {
+    generate: generateAudio
+};
+
+const image = {
+    generate: generateImage
+};
+
+const utils = {
+    logUsage
+};
+
+module.exports = {
+    chat,
+    audio,
+    image,
+    utils
+};

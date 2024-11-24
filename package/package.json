@@ -1,6 +1,6 @@
 {
   "name": "easier-openai",
-  "version": "1.0.50",
+  "version": "1.0.51",
   "description": "A package that makes it easier to use the NPM OpenAI package.",
   "main": "./src/index.js",
   "exports": {
