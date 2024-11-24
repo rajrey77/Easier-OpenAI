@@ -472,7 +472,8 @@ const image = {
 };
 
 const utils = {
-    logUsage
+    logUsage,
+    improvePrompt
 };
 
 export {
