@@ -5,7 +5,6 @@ import readline from 'readline';
 import path from 'path';
 import base64 from 'base64-js';
 import { OpenAI } from 'openai';
-
 dotenv.config();
 
 const envFilePath = './.env';
@@ -34,6 +33,11 @@ if (!fs.existsSync(generatedAudioDir)) {
 const generatedImgsDir = './gen-imgs';
 if (!fs.existsSync(generatedImgsDir)) {
     fs.mkdirSync(generatedImgsDir);
+}
+
+const responsesDir = './responses';
+if (!fs.existsSync(responsesDir)) {
+    fs.mkdirSync(responsesDir);
 }
 
 let persistentData = {};
@@ -104,39 +108,69 @@ async function getResponse(config) {
         messages: [],
         sysInstructions: '',
         maxTokens: 750,
-        test: false
+        attachImage: false,
+        imagePath: '',
+        test: false,
+        saveResponse: false,
+        responseFileName: ''
     };
 
     config = { ...defaultConfig, ...config };
 
     const newPromise = new Promise(async (resolve, reject) => {
         try {
+            let userPrompt = {  role: "user", content: config.prompt };
             let response;
+            
+            async function encodeImage(imagePath) {
+                const imageBuffer = fs.readFileSync(imagePath);
+                return base64.fromByteArray(new Uint8Array(imageBuffer));
+            }
+            
+            const imagePath = config.imagePath;
+
             if (config.type === 'chat') {
                 function changeMsgs(msgs) {
                     let newMsgs = msgs.toSpliced(0, 0, { role: 'system', content: config.sysInstructions });
-                    newMsgs.push({ role: 'user', content: config.prompt });
+                    newMsgs.push(userPrompt);
                     console.log(newMsgs);
                     return newMsgs;
                 }
                 let messages = config.messages;
-                messages.push({ role: 'user', content: config.prompt });
-
+                if(config.attachImage) {
+                    if(Array.isArray(imagePath)) {
+                        let messagesPush = { role: "user", content: [ 
+                            { type: "text", text: config.prompt },
+                        ]};
+                        for(const img of imagePath) {
+                            const imgObj = 
+                                { type: "image_url", image_url: { url: `data:image/${path.extname(img).slice(1)};base64,${await encodeImage(img)}` } }
+                            messagesPush.content.push(imgObj);
+                        }
+                        messages.push(messagesPush);
+                    }else{
+                        const contArr = [
+                            { type: "text", text: config.prompt },
+                            { type: "image_url", image_url: { url: `data:image/${path.extname(config.imagePath).slice(1)};base64,${await encodeImage(imagePath)}` } }
+                        ];
+                        messages.push({ role: 'user', content: contArr });
+                    }
+                }
                 response = await client.chat.completions.create({
                     model: config.model,
                     messages: config.sysInstructions === "" ? messages : changeMsgs(config.messages),
-                    max_tokens: config.maxTokens,
+                    max_tokens: config.maxTokens
                 });
             } else if (config.type === 'completion') {
                 response = await client.completions.create({
                     model: config.model,
-                    prompt: config.prompt,
-                    max_tokens: config.maxTokens,
+                    prompt: userPrompt,
+                    max_tokens: config.maxTokens
                 });
             } else if (config.type === 'embedding') {
                 response = await client.embeddings.create({
                     model: config.model,
-                    input: config.prompt,
+                    input: userPrompt
                 });
             }
             
@@ -145,11 +179,18 @@ async function getResponse(config) {
             reject(e);
         }
     });
-
+    const response_1 = await newPromise;
     if (config.test) {
-        return newPromise;
+        if(config.saveResponse) {
+            const responseFilePath = path.join(responsesDir, config.responseFileName == "" ? `${config.model}-${Date.now()}.json` : `${config.responseFileName}.${path.extname(config.responseFileName) == "" ? 'json' : path.extname(config.responseFileName)}`);
+            fs.writeFileSync(responseFilePath, JSON.stringify(response_1, null, 2));
+        }
+        return await response_1;
     } else {
-        const response_1 = await newPromise;
+        if(config.saveResponse) {
+            const responseFilePath = path.join(responsesDir, config.responseFileName == "" ? `${config.model}-${Date.now()}.json` : `${config.responseFileName}.${path.extname(config.responseFileName) == "" ? 'json' : path.extname(config.responseFileName)}`);
+            fs.writeFileSync(responseFilePath, JSON.stringify(response_1.choices[0].message.content, null, 2));
+        }
         if (config.type === 'embedding') {
             return response_1.data;
         }
@@ -260,7 +301,7 @@ async function generateImage(config = {}, other = {}) {
     let newOther = {
         file: false,
         path: '',
-        name: ''
+        fileName: ''
     };
     newOther = { ...newOther, ...other };
 
@@ -315,41 +356,40 @@ function logUsage(endpoint, model, tokens) {
     console.log('Usage logged.');
 }
 
-async function improvePrompt(prompt, tokens = 1500, reasoning = false) {
+async function improvePrompt(prompt, tokens, reasoning) {
     const improvedPrompt = await getResponse(reasoning ? {
         prompt,
         messages: [
             { role: 'user', content: 'John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them.' },
             { role: 'assistant', content: `
-**Original Prompt**:  
-"John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them."
-
-**Identified Issues**:  
-- **Complexity and Clarity**: The prompt involves multiple time slots that are not immediately intuitive to reconcile. It requires careful analysis to determine a common time block.
-- **Ambiguity**: The instructions do not specify whether to find the earliest possible meeting time or if any time slot will do.
-- **Lack of Structure**: The prompt doesn’t guide the responder toward a specific format for the answer.
-- **No Additional Instructions**: It could benefit from indicating what to do if no common time is found.
-
-**Improved Prompt**:  
-"Determine a time slot for a 30-minute meeting that accommodates the schedules of John, Lisa, and Daniel. Consider the following availability:
-- John: 12:30 PM - 2:00 PM
-- Lisa: 11:00 AM - 1:30 PM
-- Daniel: 1:30 PM - 3:00 PM
-
-Please:
-1. Identify any overlaps in their schedules allowing for a 30-minute meeting.
-2. Suggest the earliest possible time for the meeting.
-3. If no common time exists, state this clearly and suggest alternatives if feasible.
-Present your findings in a concise format, clearly stating the time for the proposed meeting or summarizing your conclusion."
-
-**Reasoning Behind Changes**:  
-- **Complexity Simplification**: By requesting an identified overlap, it makes it easier to deduce shared availability.
-- **Added Specificity**: By specifying the need for the earliest possible time, it adds a prioritization to the solution process.
-- **Answer Format Guidance**: By instructing a clear format for presentation, it ensures a structured response.
-- **Handling of No Solution Scenarios**: By including instructions on what to do if no time is available, it preempts potential confusion in case there’s no overlap.` }
+                **Original Prompt**:  
+                "John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them."
+                
+                **Identified Issues**:  
+                - **Complexity and Clarity**: The prompt involves multiple time slots that are not immediately intuitive to reconcile. It requires careful analysis to determine a common time block.
+                - **Ambiguity**: The instructions do not specify whether to find the earliest possible meeting time or if any time slot will do.
+                - **Lack of Structure**: The prompt doesn’t guide the responder toward a specific format for the answer.
+                - **No Additional Instructions**: It could benefit from indicating what to do if no common time is found.
+                
+                **Improved Prompt**:  
+                "Determine a time slot for a 30-minute meeting that accommodates the schedules of John, Lisa, and Daniel. Consider the following availability:
+                - John: 12:30 PM - 2:00 PM
+                - Lisa: 11:00 AM - 1:30 PM
+                - Daniel: 1:30 PM - 3:00 PM
+                
+                Please:
+                1. Identify any overlaps in their schedules allowing for a 30-minute meeting.
+                2. Suggest the earliest possible time for the meeting.
+                3. If no common time exists, state this clearly and suggest alternatives if feasible.
+                Present your findings in a concise format, clearly stating the time for the proposed meeting or summarizing your conclusion."
+                
+                **Reasoning Behind Changes**:  
+                - **Complexity Simplification**: By requesting an identified overlap, it makes it easier to deduce shared availability.
+                - **Added Specificity**: By specifying the need for the earliest possible time, it adds a prioritization to the solution process.
+                - **Answer Format Guidance**: By instructing a clear format for presentation, it ensures a structured response.
+                - **Handling of No Solution Scenarios**: By including instructions on what to do if no time is available, it preempts potential confusion in case there’s no overlap.`
+            }
         ],
-
-
         sysInstructions: `
 Generate a detailed guide with specific suggestions to improve a given prompt using prompt engineering.
 
@@ -407,7 +447,6 @@ Write in 4-5 sentences. Aim for a positive and reflective tone."
         maxTokens: tokens
     } : {
         prompt,
-
         messages: [
             { role: 'user', content: 'John is available at 12:30 to 2:00. Lisa is available from 11:00 to 1:30. Daniel is available from 1:30 to 3:00. Find a time for a 30 minute meeting for all 3 of them.' },
             { role: 'assistant', content: `
@@ -423,8 +462,6 @@ Please:
 Present your findings in a concise format, clearly stating the time for the proposed meeting or summarizing your conclusion.    
             `}
         ],
-
-
         sysInstructions: `
 Generate a detailed guide with specific suggestions to improve a given prompt using prompt engineering.
 
@@ -451,7 +488,7 @@ Analyze the provided prompt to determine its purpose, identify areas for potenti
         `,
         maxTokens: tokens
     });
-    return improvedPrompt;
+    return await improvedPrompt;
 }
 
 const chat = {
